@@ -33,13 +33,26 @@ from StringIO import StringIO
 
 import pkg_resources
 
-from PyQt4.QtCore import SIGNAL, QUrl, QString, Qt, QEvent
-from PyQt4.QtCore import QSize, QDateTime, QPoint
-from PyQt4.QtGui import QApplication, QImage, QPainter
-from PyQt4.QtGui import QCursor, QMouseEvent, QKeyEvent
-from PyQt4.QtNetwork import QNetworkCookie, QNetworkAccessManager, QSslConfiguration, QSslCipher
-from PyQt4.QtNetwork import QNetworkCookieJar, QNetworkRequest, QNetworkProxy, QSsl, QSslSocket
-from PyQt4.QtWebKit import QWebPage, QWebView
+try:
+    from PySide import QtCore
+    QtCore.QString = str
+    from PySide.QtCore import SIGNAL, QUrl, QString, Qt, QEvent
+    from PySide.QtCore import QSize, QDateTime, QPoint
+    from PySide.QtGui import QApplication, QImage, QPainter
+    from PySide.QtGui import QCursor, QMouseEvent, QKeyEvent
+    from PySide.QtNetwork import QNetworkCookie, QNetworkAccessManager, QSslConfiguration, QSslCipher
+    from PySide.QtNetwork import QNetworkCookieJar, QNetworkRequest, QNetworkProxy, QSsl, QSslSocket
+    from PySide.QtWebKit import QWebPage, QWebView
+    HAS_PYSIDE = True
+except Exception, e:
+    HAS_PYSIDE = False
+    from PyQt4.QtCore import SIGNAL, QUrl, QString, Qt, QEvent
+    from PyQt4.QtCore import QSize, QDateTime, QPoint
+    from PyQt4.QtGui import QApplication, QImage, QPainter
+    from PyQt4.QtGui import QCursor, QMouseEvent, QKeyEvent
+    from PyQt4.QtNetwork import QNetworkCookie, QNetworkAccessManager, QSslConfiguration, QSslCipher
+    from PyQt4.QtNetwork import QNetworkCookieJar, QNetworkRequest, QNetworkProxy, QSsl, QSslSocket
+    from PyQt4.QtWebKit import QWebPage, QWebView
 
 
 SpynnerQapplication = None
@@ -51,8 +64,34 @@ ERROR, WARNING, INFO, DEBUG = range(4)
 argv = ['dummy']
 _marker = []
 
-from PyQt4.QtCore import QObject, pyqtSlot
 
+
+class NManager(QNetworkAccessManager):
+    @classmethod
+    def new(klass, spynner):
+        inst = klass()
+        inst.ob = spynner
+        return inst
+
+    ob = None # Browser instance
+    def createRequest(manager, operation, request, data): 
+        self = manager.ob
+        url = unicode(toString(request.url()))
+        req = self.make_request(url)
+        operation_name = self._operation_names[operation].upper()
+        self._debug(INFO, "Request: %s %s" % (operation_name, url))
+        for h in req.rawHeaderList():
+            self._debug(DEBUG, "  %s: %s" % (h, req.rawHeader(h)))
+        if self._url_filter:
+            if self._url_filter(self._operation_names[operation], url) is False:
+                self._debug(INFO, "URL filtered: %s" % url)
+                req.setUrl(QUrl("about:blank"))
+            else:
+                self._debug(DEBUG, "URL not filtered: %s" % url)
+        import pdb;pdb.set_trace()  ## Breakpoint ##
+        reply = QNetworkAccessManager.createRequest(
+            manager, operation, req, data)
+        return reply                   
 
 class Browser(object):
     """
@@ -142,7 +181,8 @@ class Browser(object):
         """PyQt4.QtWebKit.QWebPage object."""
         wp = self.webpage = QWebPage()
         # Network Access Manager and cookies
-        mngr = self.manager = QNetworkAccessManager()
+        #mngr = self.manager = QNetworkAccessManager()
+        mngr = self.manager = NManager.new(self)
         """PyQt4.QtNetwork.QTNetworkAccessManager object."""
         self.patch_manager(self.manager)
         self.webpage.setNetworkAccessManager(self.manager)
@@ -221,7 +261,7 @@ class Browser(object):
         self._debug(INFO, "Page load started")
 
     def _on_manager_ssl_errors(self, reply, errors):
-        url = unicode(reply.url().toString())
+        url = unicode(toString(reply.url()))
         if self.ignore_ssl_errors:
             self._debug(WARNING, "SSL certificate error ignored: %s" % url)
             reply.ignoreSslErrors()
@@ -229,10 +269,11 @@ class Browser(object):
             self._debug(WARNING, "SSL certificate error: %s" % url)
 
     def patch_manager(self, manager):
+        return
         manager.createRequest = self._manager_create_request
 
     def _on_authentication_required(self, reply, authenticator):
-        url = unicode(reply.url().toString())
+        url = unicode(toString(reply.url()))
         realm = unicode(authenticator.realm())
         self._debug("HTTP auth required: %s (realm: %s)" % (url, realm))
         if not self._http_authentication_callback:
@@ -250,7 +291,7 @@ class Browser(object):
 
     def _on_reply(self, reply):
         self._replies += 1
-        self._reply_url = unicode(reply.url().toString())
+        self._reply_url = unicode(toString(reply.url()))
         self._reply_status = not bool(reply.error())
         if reply.error():
             self._debug(WARNING, "Reply error: %s - %d (%s)" %
@@ -339,7 +380,7 @@ class Browser(object):
         return path
 
     def _start_download(self, reply, outfd):
-        url = unicode(reply.url().toString())
+        url = unicode(toString(reply.url()))
         path = None
         if outfd is None:
             path = self._get_filepath_for_url(url, reply)
@@ -421,7 +462,7 @@ class Browser(object):
         return self._html_parser(self.html)
 
     def _get_url(self):
-        return unicode(self.webframe.url().toString())
+        return unicode(toString(self.webframe.url()))
 
     url = property(_get_url)
     """Current URL."""
@@ -471,67 +512,49 @@ class Browser(object):
             ...     return 'google' in b.html.lower()
             >>> br.load('http://www.google.fr', wait_callback=wait_load, tries=3)
 
-
         """
         if not headers:
             headers = []
         if not body:
             body = ""
-        req = self.make_request(url)
         self._headers = self.headers[:]
         self._headers.extend(headers)
+        req = self.make_request(url)
         self.webframe.load(req, operation, body)
         if wait_callback is None:
             return self._wait_load(timeout = load_timeout)
         else:
             return self.wait_for_content(wait_callback, tries=tries, delay=load_timeout)
 
+
+    def make_request(self, url):
+        if isinstance(url, basestring):
+            url = QUrl(url)
+        if not isinstance(url, QNetworkRequest):
+            url = QNetworkRequest(url)
+        for header, value in self._headers:
+            url.setRawHeader(header, value)
+        url = self.apply_ssl(url)
+        return url
+
     def apply_ssl(self, request):
         if self.ssl_protocol:
             if self.sslconf.protocol() != self.ssl_protocol:
-                self.sslconf.setProtocol(QSsl.TlsV1)
-                QSslConfiguration.setDefaultConfiguration(
-                    self.sslconf)
-        ssl_config = QSslConfiguration.defaultConfiguration()
-        ssl_config.setProtocol(QSsl.TlsV1)
-        ssl_config.setSslOption(QSsl.SslOptionDisableLegacyRenegotiation, False)
-        request.setSslConfiguration(ssl_config)
+                self.sslconf.setProtocol(self.ssl_protocol)
+                QSslConfiguration.setDefaultConfiguration(self.sslconf)
+        request.setSslConfiguration(self.sslconf)
         return request
 
-    def _manager_create_request(self, operation, request, data):
-        url = unicode(request.url().toString())
-        for header, value in self._headers:
-            request.setRawHeader(header, value)
-        operation_name = self._operation_names[operation].upper()
-        self._debug(INFO, "Request: %s %s" % (operation_name, url))
-        for h in request.rawHeaderList():
-            self._debug(DEBUG, "  %s: %s" % (h, request.rawHeader(h)))
-        if self._url_filter:
-            if self._url_filter(self._operation_names[operation], url) is False:
-                self._debug(INFO, "URL filtered: %s" % url)
-                request.setUrl(QUrl("about:blank"))
-            else:
-                self._debug(DEBUG, "URL not filtered: %s" % url)
-        self.apply_ssl(request)
-        reply = QNetworkAccessManager.createRequest(
-            self.manager, operation, request, data)
-        return reply
-
-    def make_request(self, url):
-        if not isinstance(url, QUrl):
-            url = QUrl(url)
-        req = QNetworkRequest(url)
-        req = self.apply_ssl(req)
-        return req
-
     def is_jquery_loaded(self):
-        return self.runjs('typeof(spynner_jquery_loaded);', debug=False).toString() != 'undefined'
+        return toString(self.runjs('typeof(spynner_jquery_loaded);', debug=False)) != 'undefined'
 
     def is_jquery_simulate_loaded(self):
-        return self.runjs('typeof(spynner_jquery_simulate_loaded);', debug=False).toString() != 'undefined'
+        return toString(
+            self.runjs('typeof(spynner_jquery_simulate_loaded);', debug=False)) != 'undefined'
 
     def is_additional_js_loaded(self):
-        return self.runjs('typeof(spynner_additional_js_loaded);', debug=False).toString() != 'undefined'
+        return toString(
+            self.runjs('typeof(spynner_additional_js_loaded);', debug=False)) != 'undefined'
 
     def load_jquery(self, force=False):
         """Load jquery in the current frame"""
@@ -732,7 +755,7 @@ class Browser(object):
         except:
             #try also using js
             try:
-                x, y = ("%s" % self.runjs(jscode, debug=False).toString()).split(',')
+                x, y = ("%s" % toString(self.runjs(jscode, debug=False))).split(',')
                 twhere = QPoint(int(x), int(y))
                 where = self.webview.mapToGlobal(twhere)
                 if where == twhere:
@@ -1207,10 +1230,15 @@ class Browser(object):
         #returning "TypeError: Type error" - BUT it looks like the JS does complete after
         #the function has already returned
         res = self.webframe.evaluateJavaScript(jscode)
-        js_has_runned_successfully = res.isValid() or res.isNull()
-        if not js_has_runned_successfully:
-            # try another time
-            res = self.webframe.evaluateJavaScript(jscode)
+        try:
+            js_has_runned_successfully = res.isValid() or res.isNull()
+            if not js_has_runned_successfully:
+                # try another time
+                res = self.webframe.evaluateJavaScript(jscode)
+        except:
+            # pyside
+            if not HAS_PYSIDE:
+                raise
         return res
 
     def set_javascript_confirm_callback(self, callback):
@@ -1300,7 +1328,7 @@ class Browser(object):
         @note: If url is a path, the current base URL will be pre-appended.
         """
         def _on_reply(reply):
-            url = unicode(reply.url().toString())
+            url = unicode(toString(reply.url()))
             self._download_reply_status = not bool(reply.error())
         self._download_reply_status = None
         if not urlparse.urlsplit(url).scheme:
@@ -1308,7 +1336,7 @@ class Browser(object):
         request = QNetworkRequest(QUrl(url))
         request = self.apply_ssl(request)
         # Create a new manager to process this download
-        manager = QNetworkAccessManager()
+        manager = NManager.new(self)
         self.patch_manager(manager)
         # create a copy of the cookies jar to prevent
         # CJ to be garbage collected
@@ -1493,4 +1521,11 @@ class _ExtendedNetworkCookieJar(QNetworkCookieJar):
         cookies = [get_cookie(line) for line in string_cookies.splitlines()
           if line.strip() and not line.strip().startswith("#")]
         self.setAllCookies(filter(bool, cookies))
+
+
+def toString(s):
+    if HAS_PYSIDE:
+        if isinstance(s, basestring):
+            return s
+    return s.toString()
 
