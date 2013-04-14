@@ -494,6 +494,7 @@ class Browser(object):
                     self.sslconf)
         ssl_config = QSslConfiguration.defaultConfiguration()
         ssl_config.setProtocol(QSsl.TlsV1)
+        ssl_config.setSslOption(QSsl.SslOptionDisableLegacyRenegotiation, False)
         request.setSslConfiguration(ssl_config)
         return request
 
