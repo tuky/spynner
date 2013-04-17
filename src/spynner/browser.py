@@ -23,6 +23,7 @@ Javascript/AJAX support. It is build upon the PyQtWebKit framework.
 import itertools
 import cookielib
 import tempfile
+from pprint import pprint
 import urlparse
 import urllib2
 import time
@@ -46,6 +47,7 @@ try:
     HAS_PYSIDE = True
 except Exception, e:
     HAS_PYSIDE = False
+    from PyQt4 import QtCore
     from PyQt4.QtCore import SIGNAL, QUrl, QString, Qt, QEvent
     from PyQt4.QtCore import QSize, QDateTime, QPoint
     from PyQt4.QtGui import QApplication, QImage, QPainter
@@ -53,10 +55,10 @@ except Exception, e:
     from PyQt4.QtNetwork import QNetworkCookie, QNetworkAccessManager, QSslConfiguration, QSslCipher
     from PyQt4.QtNetwork import QNetworkCookieJar, QNetworkRequest, QNetworkProxy, QSsl, QSslSocket
     from PyQt4.QtWebKit import QWebPage, QWebView
+    from PyQt4.QtWebKit import QWebInspector
 
 
 SpynnerQapplication = None
-
 
 
 # Debug levels
@@ -64,34 +66,6 @@ ERROR, WARNING, INFO, DEBUG = range(4)
 argv = ['dummy']
 _marker = []
 
-
-
-class NManager(QNetworkAccessManager):
-    @classmethod
-    def new(klass, spynner):
-        inst = klass()
-        inst.ob = spynner
-        return inst
-
-    ob = None # Browser instance
-    def createRequest(manager, operation, request, data): 
-        self = manager.ob
-        url = unicode(toString(request.url()))
-        req = self.make_request(url)
-        operation_name = self._operation_names[operation].upper()
-        self._debug(INFO, "Request: %s %s" % (operation_name, url))
-        for h in req.rawHeaderList():
-            self._debug(DEBUG, "  %s: %s" % (h, req.rawHeader(h)))
-        if self._url_filter:
-            if self._url_filter(self._operation_names[operation], url) is False:
-                self._debug(INFO, "URL filtered: %s" % url)
-                req.setUrl(QUrl("about:blank"))
-            else:
-                self._debug(DEBUG, "URL not filtered: %s" % url)
-        import pdb;pdb.set_trace()  ## Breakpoint ##
-        reply = QNetworkAccessManager.createRequest(
-            manager, operation, req, data)
-        return reply                   
 
 class Browser(object):
     """
@@ -120,6 +94,8 @@ class Browser(object):
                  ignore_ssl_errors = True,
                  headers = None,
                  ssl_protocol=None,
+                 ssl_ciphers = None,
+                 inspector=False,
                 ):
         """
         Init a Browser instance.
@@ -155,6 +131,17 @@ class Browser(object):
         import spynner
         self.ssl_protocol = ssl_protocol
         self.sslconf = QSslConfiguration.defaultConfiguration()
+        ciphers = []
+        self.ssl_ciphers = ssl_ciphers
+        if not self.ssl_ciphers:
+            self.ssl_ciphers = []
+        for cip in self.sslconf.ciphers():
+            if (
+                (toString(cip.name()) in self.ssl_ciphers)
+                or not self.ssl_ciphers
+            ):
+                ciphers.append(cip)
+        self.sslconf.setCiphers(ciphers)
         if not spynner.SpynnerQapplication:
             spynner.SpynnerQapplication = QApplication(spynner.argv)
         self.application = spynner.SpynnerQapplication
@@ -184,7 +171,6 @@ class Browser(object):
         #mngr = self.manager = QNetworkAccessManager()
         mngr = self.manager = NManager.new(self)
         """PyQt4.QtNetwork.QTNetworkAccessManager object."""
-        self.patch_manager(self.manager)
         self.webpage.setNetworkAccessManager(self.manager)
         if not self.additional_js_files:
             self.additional_js_files = []
@@ -221,9 +207,8 @@ class Browser(object):
         wp.javaScriptPrompt = self._javascript_prompt
         self._javascript_confirm_callback = None
         self._javascript_confirm_prompt = None
-        self.cookiesjar = _ExtendedNetworkCookieJar()
         """PyQt4.QtNetwork.QNetworkCookieJar object."""
-        mngr.setCookieJar(self.cookiesjar)
+        self.cookies = []
         mngr.sslErrors.connect(self._on_manager_ssl_errors)
         mngr.finished.connect(self._on_reply)
         mngr.authenticationRequired.connect(
@@ -242,6 +227,10 @@ class Browser(object):
             self._on_unsupported_content)
         wp.loadFinished.connect(self._on_load_finished)
         wp.loadStarted.connect(self._on_load_started)
+        if inspector:
+            self.inspector = QWebInspector()
+            self.inspector.setPage(self.webpage)
+            self.inspector.setVisible(True)
 
     @property
     def webframe(self):
@@ -268,10 +257,6 @@ class Browser(object):
         else:
             self._debug(WARNING, "SSL certificate error: %s" % url)
 
-    def patch_manager(self, manager):
-        return
-        manager.createRequest = self._manager_create_request
-
     def _on_authentication_required(self, reply, authenticator):
         url = unicode(toString(reply.url()))
         realm = unicode(authenticator.realm())
@@ -293,6 +278,9 @@ class Browser(object):
         self._replies += 1
         self._reply_url = unicode(toString(reply.url()))
         self._reply_status = not bool(reply.error())
+        self.cookies = merge_cookies(
+            self.cookies,
+            self.manager.cookieJar().allCookies())
         if reply.error():
             self._debug(WARNING, "Reply error: %s - %d (%s)" %
                 (self._reply_url, reply.error(), reply.errorString()))
@@ -403,8 +391,8 @@ class Browser(object):
         if path is not None:
             self.files.append((path, {'reply':reply,'finished':False,}))
         reply.readyRead.connect(_on_ready_read)
-        reply.NetworkError.connect(_on_network_error)
-        reply.finishedconnect(_on_finished)
+        reply.error.connect(_on_network_error)
+        reply.finished.connect(_on_finished)
         self._debug(INFO, "Start download: %s" % url)
 
     def _wait_load(self, timeout=None):
@@ -527,7 +515,9 @@ class Browser(object):
             return self.wait_for_content(wait_callback, tries=tries, delay=load_timeout)
 
 
-    def make_request(self, url):
+    def make_request(self, url, operation="GET"):
+        if operation:
+            operation = ("%s" % operation).lower()
         if isinstance(url, basestring):
             url = QUrl(url)
         if not isinstance(url, QNetworkRequest):
@@ -809,8 +799,7 @@ class Browser(object):
     def wk_click_element_ajax(self, element, wait_requests=1, timeout=None):
         """Click a AJAX link and wait for the request to finish.
         @param selector: WebKit xpath selector to an element
-        @param wait_requests: How many requests to wait before returning. Useful
-                              for AJAX requests.
+        @param wait_requests: How many requests to wait before returning. Useful for AJAX requests.
         @param: timeout timeout to wait in seconds
         """
         return self.wk_click_element(element, wait_requests=wait_requests, timeout=timeout)
@@ -927,33 +916,53 @@ class Browser(object):
         ret = None
         found = False
         loaded = False
+        head = "SPYNNER waitload:"
+        loaded_msg = (
+            '%s content loaded, waiting for '
+            'content to mach the callback' % head)
+        waiting_msg = (
+            '%s content not loaded, '
+            'fallback by waiting' % head)
+        to_msg = ("%s %s" % (
+                  "%s Timeout reached: " % head,
+                  "%d retries for %ss delay."))
+        found_msg = (
+            '%s The callback found what it '
+            'was waiting for in its contents!' % head)
+        for_ = "%s FOR: %s" % (
+            head, error_message)
         if not tries:
             tries = True
         while bool(tries) and not found:
-            if isinstance(tries, int) and not isinstance(tries, bool):
+            if (
+                isinstance(tries, int)
+                and not isinstance(tries, bool)
+            ):
                 if tries > 0:
                     tries -= 1
             if callback(self):
                 found = True
             if not found:
+                if error_message:
+                    self._debug(DEBUG, for_)
                 if not loaded:
                     try:
                         loaded = self._wait_load(timeout=delay)
-                        self._debug(DEBUG, 'SPYNNER waitload: content loaded, waiting for content to mach the callback')
+                        self._debug(DEBUG, loaded_msg)
                     except SpynnerTimeout, e:
-                        self._debug(DEBUG, 'SPYNNER waitload: content not loaded, fallback by waiting')
+                        self._debug(DEBUG, waiting_msg)
                 else:
-                    self._debug(DEBUG, 'SPYNNER waitload: content loaded, waiting for content to mach the callback')
+                    self._debug(DEBUG, loaded_msg)
                     time.sleep(delay)
         if not found:
             if not isinstance(ref_tries, int):
                 ref_tries = 'unlimited'
-            msg = u"SPYNNER waitload: Timeout reached: %d retries for %ss delay." % (ref_tries, delay)
+            msg = to_msg % (ref_tries, delay)
             if error_message:
                 msg += u'\n%s' % error_message
             raise SpynnerTimeout(msg)
         else:
-            self._debug(DEBUG, 'SPYNNER waitload: The callback found what it was waiting for in its contents!')
+            self._debug(DEBUG, found_msg)
         load_status = self._load_status
         self._load_status = None
         return load_status
@@ -1059,6 +1068,14 @@ class Browser(object):
         except:
             raise SpynnerError("childframe does not exist")
         self.load_js()
+
+    def adapt_size(self, frame=None):
+        if not frame:
+            frame = self.webpage.mainFrame()
+        self.setframe_obj(frame)
+        self.webpage.setViewportSize(
+            frame.contentsSize())
+        self.webview.adjustSize()
 
     def set_webframe(self, framenumber):
         cf = self.webframe.childFrames()
@@ -1192,7 +1209,6 @@ class Browser(object):
             option.evaluateJavaScript('this.selected = true;')
         for option in notselect:
             option.evaluateJavaScript('this.selected = false;')
-
 
     def wk_select(self, selector, values=None, remove=True):
         """Choose a option in a select using  WebKit API.
@@ -1337,12 +1353,6 @@ class Browser(object):
         request = self.apply_ssl(request)
         # Create a new manager to process this download
         manager = NManager.new(self)
-        self.patch_manager(manager)
-        # create a copy of the cookies jar to prevent
-        # CJ to be garbage collected
-        cj = _ExtendedNetworkCookieJar()
-        cj.setAllCookies(self.cookiesjar.allCookies())
-        manager.setCookieJar(cj)
         reply = manager.get(request)
         itime = time.time()
         if reply.error():
@@ -1473,7 +1483,7 @@ class SpynnerTimeout(Exception):
 class SpynnerJavascriptError(Exception):
     """Error on the injected Javascript code."""
 
-class _ExtendedNetworkCookieJar(QNetworkCookieJar):
+class ExtendedNetworkCookieJar(QNetworkCookieJar):
     def mozillaCookies(self):
         """
         Return all cookies in Mozilla text format:
@@ -1483,23 +1493,15 @@ class _ExtendedNetworkCookieJar(QNetworkCookieJar):
         .firefox.com     TRUE   /  FALSE  946684799   MOZILLA_ID  100103
         """
         header = ["# Netscape HTTP Cookie File", ""]
-        def bool2str(value):
-            return {True: "TRUE", False: "FALSE"}[value]
-        def byte2str(value):
-            return str(value)
-        def get_line(cookie):
-            domain_flag = str(cookie.domain()).startswith(".")
-            return "\t".join([
-                byte2str(cookie.domain()),
-                bool2str(domain_flag),
-                byte2str(cookie.path()),
-                bool2str(cookie.isSecure()),
-                byte2str(cookie.expirationDate().toTime_t()),
-                byte2str(cookie.name()),
-                byte2str(cookie.value()),
-            ])
-        lines = [get_line(cookie) for cookie in self.allCookies()]
+        lines = [self.get_cookie_line(cookie)
+                 for cookie in self.allCookies()]
         return "\n".join(header + lines)
+
+    def cookies_map(self):
+        maps = {}
+        for i in self.allCookies():
+            maps[i] = get_cookie_line(i)
+        return maps
 
     def setMozillaCookies(self, string_cookies):
         """Set all cookies from Mozilla test format string.
@@ -1522,10 +1524,107 @@ class _ExtendedNetworkCookieJar(QNetworkCookieJar):
           if line.strip() and not line.strip().startswith("#")]
         self.setAllCookies(filter(bool, cookies))
 
+    def cookiesForUrl(self, qurl):
+        cookies = QNetworkCookieJar.cookiesForUrl(self, qurl)
+        #for i in cookies:
+        #    info = get_cookie_info(i)
+        #    print "------------>> %(domain)s " % info
+        return cookies
 
 def toString(s):
     if HAS_PYSIDE:
         if isinstance(s, basestring):
             return s
+    if isinstance(s, QString):
+        return u"%s" % s
     return s.toString()
+
+
+def bool2str(value):
+    return {True: "TRUE", False: "FALSE"}[value]
+
+
+def byte2str(value):
+    return str(value)
+
+
+def get_cookie_line(cookie):
+    domain_flag = str(cookie.domain()).startswith(".")
+    return "\t".join([
+        byte2str(cookie.domain()),
+        bool2str(domain_flag),
+        byte2str(cookie.path()),
+        bool2str(cookie.isSecure()),
+        byte2str(cookie.expirationDate().toTime_t()),
+        byte2str(cookie.name()),
+        byte2str(cookie.value()),
+    ])
+
+
+def get_cookie_info(cookie):
+    domain_flag = str(cookie.domain()).startswith(".")
+    return {
+        'domain': byte2str(cookie.domain()),
+        'domain_flag': domain_flag,
+        'path': byte2str(cookie.path()),
+        'isSecure': cookie.isSecure(),
+        'timestamp': byte2str(cookie.expirationDate().toTime_t()),
+        'name': byte2str(cookie.name()),
+        'value': byte2str(cookie.value()),
+    }
+
+
+
+
+def merge_cookies(cookies1, cookies2):
+    kf = "%(name)s____%(domain)s____%(path)s"
+    cookies = dict(
+        [(kf % c, d)
+         for c, d in
+         [(get_cookie_info(cc), cc) for cc in cookies1]
+        ])
+    for i in cookies2:
+        if 'LaBanquePostale' in kf:
+            pprint (
+                [get_cookie_info(c) for c in cookies],
+                get_cookie_info(i))
+        cookies[kf % get_cookie_info(i)] = i
+    return cookies.values()
+
+
+class NManager(QNetworkAccessManager):
+    ob = None # Browser instance
+    @classmethod
+    def new(klass, spynner, cookiejar_klass=None):
+        if not cookiejar_klass:
+            cookiejar_klass = ExtendedNetworkCookieJar
+        manager = klass()
+        manager.ob = spynner
+        cookiejar = cookiejar_klass()
+        manager.setCookieJar(cookiejar)
+        manager.cookieJar().setParent(spynner.webpage)
+        return manager
+
+    def createRequest(manager, operation, request, data):
+        self = manager.ob
+        jar = manager.cookieJar()
+        cookies = merge_cookies(jar.allCookies(),
+                                self.cookies)
+        manager.cookieJar().setAllCookies(cookies)
+        url = unicode(toString(request.url()))
+        operation_name = self._operation_names.get(
+            operation, str(operation)).upper()
+        req = self.make_request(request, operation_name)
+        self._debug(INFO, "Request: %s %s" % (operation_name, url))
+        for h in req.rawHeaderList():
+            self._debug(DEBUG, "  %s: %s" % (h, req.rawHeader(h)))
+        if self._url_filter:
+            if self._url_filter(self._operation_names[operation], url) is False:
+                self._debug(INFO, "URL filtered: %s" % url)
+                req.setUrl(QUrl("about:blank"))
+            else:
+                self._debug(DEBUG, "URL not filtered: %s" % url)
+        reply = QNetworkAccessManager.createRequest(
+            manager, operation, req, data)
+        return reply
 
