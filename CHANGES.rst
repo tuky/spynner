@@ -6,6 +6,7 @@ CHANGELOG
 - Better ssl support
 - better http headers support
 - pyside support
+- better cookie support
 
 
 2.6 (2013-03-07)
