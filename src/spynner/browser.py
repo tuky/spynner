@@ -48,7 +48,7 @@ try:
 except Exception, e:
     HAS_PYSIDE = False
     from PyQt4 import QtCore
-    from PyQt4.QtCore import SIGNAL, QUrl, QString, Qt, QEvent
+    from PyQt4.QtCore import SIGNAL, QUrl, QString, Qt, QEvent, pyqtSlot
     from PyQt4.QtCore import QSize, QDateTime, QPoint
     from PyQt4.QtGui import QApplication, QImage, QPainter
     from PyQt4.QtGui import QCursor, QMouseEvent, QKeyEvent
@@ -72,6 +72,7 @@ class InterruptingWebPage(QWebPage):
     Override QWebPage to interrupt JavaScript
     """
 
+    @pyqtSlot(bool)
     def shouldInterruptJavaScript(self):
         """
         Disable javascript interruption dialog box
