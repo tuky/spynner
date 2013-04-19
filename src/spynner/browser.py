@@ -67,6 +67,18 @@ argv = ['dummy']
 _marker = []
 
 
+class InterruptingWebPage(QWebPage):
+    """
+    Override QWebPage to interrupt JavaScript
+    """
+
+    def shouldInterruptJavaScript(self):
+        """
+        Disable javascript interruption dialog box
+        """
+        return True
+
+
 class Browser(object):
     """
     Stateful programmatic web browser class based upon QtWebKit.
@@ -165,8 +177,8 @@ class Browser(object):
         self.additional_js = ""
         self.event_looptime = event_looptime
         self.ignore_ssl_errors = ignore_ssl_errors
-        """PyQt4.QtWebKit.QWebPage object."""
-        wp = self.webpage = QWebPage()
+        """spynner.InterruptingWebPage object."""
+        wp = self.webpage = InterruptingWebPage()
         # Network Access Manager and cookies
         #mngr = self.manager = QNetworkAccessManager()
         mngr = self.manager = NManager.new(self)
@@ -1030,7 +1042,7 @@ class Browser(object):
         return result
 
     def create_webview(self, show=False, force=False):
-        """Create a QWebView object and insert current QWebPage."""
+        """Create a QWebView object and insert current InterruptingWebPage."""
         if force and (self.webview is not None):
             self.destroy_webview()
         if self.webview is not None:
