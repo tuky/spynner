@@ -18,7 +18,7 @@ from setuptools import setup, find_packages
 import os
 from distutils.cmd import Command
 
-version = '2.15.dev0'
+version = '2.16.dev0'
 url = "https://github.com/makinacorpus/spynner"
 
 def read(rnames):
@@ -36,7 +36,7 @@ setup(
     url=url,
     packages = find_packages('src'),
     package_dir = {'': 'src'},
-    install_requires=['BeautifulSoup', 'pyquery', 'autopy'],
+    install_requires=['BeautifulSoup', 'pyquery', 'autopy', 'setuptools',],
     scripts=[],
     license="GPL v3.0",
     long_description = (
