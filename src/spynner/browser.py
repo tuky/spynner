@@ -1572,6 +1572,8 @@ def bool2str(value):
 
 
 def byte2str(value):
+    if isinstance(value, unicode):
+        return value.encode("utf-8")
     return str(value)
 
 
