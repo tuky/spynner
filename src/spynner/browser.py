@@ -33,6 +33,7 @@ import os
 from StringIO import StringIO
 
 import pkg_resources
+import autopy
 
 try:
     from PySide import QtCore
@@ -227,11 +228,13 @@ class Browser(object):
         mngr.authenticationRequired.connect(
             self._on_authentication_required)
         self._operation_names = dict(
-            (getattr(QNetworkAccessManager, s + "Operation"),
+            (getattr(QNetworkAccessManager, s + "Operation", s),
              s.lower())
             for s in ("Get", "Head", "Post",
                       "Put", "Delete", "Custom"))
-
+        for i in self._operation_names.keys():
+            if isinstance(i, basestring):
+                del self._operation_names[i]
         # Webpage slots
         self._load_status = None
         self._replies = 0
@@ -294,13 +297,24 @@ class Browser(object):
         self.cookies = merge_cookies(
             self.cookies,
             self.manager.cookieJar().allCookies())
+        try:
+            http_status = "%s" % toString(
+                reply.attribute(QNetworkRequest.HttpStatusCodeAttribute))
+            http_status_m = "%s" % toString(
+                reply.attribute(QNetworkRequest.HttpReasonPhraseAttribute))
+        except:
+            http_status_m, http_status = "", ""
+
+
         if reply.error():
-            self._debug(WARNING, "Reply error: %s - %d (%s)" %
-                (self._reply_url, reply.error(), reply.errorString()))
+            self._debug(WARNING, "Reply error: %s/%s %s - %d (%s)" %
+                (http_status, http_status_m,
+                 self._reply_url, reply.error(), reply.errorString()))
             self.errorCode = reply.error()
             self.errorMessage = reply.errorString()
         else:
-            self._debug(INFO, "Reply successful: %s" % self._reply_url)
+            self._debug(INFO, "Reply: %s/%s - %s" % (
+                http_status, http_status_m, self._reply_url))
         for header in reply.rawHeaderList():
             self._debug(DEBUG, "  %s: %s" % (header, reply.rawHeader(header)))
 
@@ -353,7 +367,8 @@ class Browser(object):
         self.webview = None
 
     def _on_load_finished(self, successful):
-        self.setframe_obj()
+        if hasattr(self, "webpage"):
+            self.setframe_obj()
         self._load_status = successful
         status = {True: "successful", False: "error"}[successful]
         self._debug(INFO, "Page load finished (%d bytes): %s (%s)" %
@@ -395,7 +410,7 @@ class Browser(object):
             self._debug(DEBUG, "Read from download stream (%d bytes): %s"
                 % (len(data), url))
         def _on_network_error():
-            self.debug(ERROR, "Network error on download: %s" % url)
+            self._debug(ERROR, "Network error on download: %s" % url)
         def _on_finished():
             if path is not None:
                 outfd.flush()
@@ -468,6 +483,8 @@ class Browser(object):
     url = property(_get_url)
     """Current URL."""
 
+    contents = property(_get_html)
+    """Rendered HTML in current page."""
     html = property(_get_html)
     """Rendered HTML in current page."""
 
@@ -703,7 +720,7 @@ class Browser(object):
         """Click a AJAX link and wait for the request to finish."""
         return self.click(selector, wait_requests=wait_requests, timeout=timeout)
 
-    def mouve_mouse(self, selector, timeout=1, offsetx=0, offsety=0, real=True):
+    def move_mouse(self, selector, timeout=1, offsetx=0, offsety=0, real=True):
         """Move the move to the css selector"""
         self.moveMouse(
             self.getPosition(
@@ -712,19 +729,24 @@ class Browser(object):
             timeout=timeout,
             real=real)
 
-    def moveMouse(self, where, timeout=1, real=False, offsetx=0, offsety=0):
+    def moveMouse(self, where, timeout=1, real=False,
+                  offsetx=0, offsety=0,
+                  adapt_size=False, pdb=False):
         """Move the mouse to a relative to the window point."""
+        if adapt_size:
+            time.sleep(1)
         if not real:
             where = self.getRealPosition(where)
         where = QPoint(int(where.x())+offsetx,
                        int(where.y())+offsety)
         self.webview.grabMouse()
+        #self._events_loop(timeout)
+        #cursorw = self.application.desktop().cursor()
         cursorw = QCursor()
         cursorw.setPos(where)
-        self.wait(1)
-        self.webview.setCursor(cursorw)
-        self.wait(timeout)
         self.webview.releaseMouse()
+        #self._events_loop(timeout)
+        return cursorw
 
     def getRealPosition(self, point, offsetx=0, offsety=0):
         """Compute the coordinates by merging with the containing frame.
@@ -736,7 +758,7 @@ class Browser(object):
         where = self.webview.mapToGlobal(where)
         return where
 
-    def nativeClickAt(self, where, timeout=1, real=False):
+    def nativeClickAt(self, where, timeout=1, real=False, pdb=False):
         """Click on an arbitrar location of the browser.
         @param where: where to click (QPoint)
         @param real: if not true coordinates are relative to the window instead of the screen
@@ -744,15 +766,28 @@ class Browser(object):
         """
         if not real:
             where = self.getRealPosition(where)
-        self.moveMouse(where, real=True)
-        self.webview.grabMouse()
-        eventp = QMouseEvent(QEvent.MouseButtonPress,   where, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-        eventl = QMouseEvent(QEvent.MouseButtonRelease, where, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-        self.application.sendEvent(self.application.focusWidget(), eventp)
-        self.application.sendEvent(self.application.focusWidget(), eventl)
-        self._events_loop(timeout)
-        self._events_loop(timeout)
-        self.webview.releaseMouse()
+        self.moveMouse(where, timeout=timeout, real=True, pdb=pdb)
+        """do not work anymore, rely on autopy
+        def click():
+            in the meantime
+            w = self.webview.page()
+            buttons = Qt.MouseButtons(Qt.LeftButton)
+            eventp = QMouseEvent(QEvent.MouseButtonPress, where,
+                                 Qt.LeftButton, buttons, Qt.NoModifier)
+            eventl = QMouseEvent(QEvent.MouseButtonRelease, where,
+                                 Qt.LeftButton, buttons, Qt.NoModifier)
+            f.application.sendEvent(w, eventp)
+            self.application.sendEvent(w, eventl)
+            self._events_loop(0)
+            self._events_loop(0)
+            self.application.processEvents()
+            self.application.processEvents()"""
+        autopy.mouse.click()
+        try:
+            self._events_loop(0.05)
+            self._events_loop(0.05)
+        except:
+            pass
 
     def getPosition(self, selector, offsetx=0, offsety=0):
         """Get the position QPoint(x,y) of a css selector.
@@ -866,8 +901,7 @@ class Browser(object):
         element = self.webframe.findFirstElement(selector)
         return self.wk_click_element_ajax(element, wait_requests=wait_requests, timeout=timeout)
 
-    # XXX: TODO: this method do not work by now, event seems not posted, strange
-    def native_click(self, selector, wait_load=False, wait_requests=None, timeout=None, offsetx = 5, offsety = 5, real=False):
+    def native_click(self, selector, wait_load=False, wait_requests=None, timeout=1, offsetx = 5, offsety = 5, real=False, pdb=False):
         """
         Click any clickable element in page by sending a raw QT mouse event.
 
@@ -885,12 +919,11 @@ class Browser(object):
         item = self.webframe.findFirstElement(selector)
         item.setFocus()
         where = QPoint(where.x() + offsetx, where.y() + offsety)
-        self.nativeClickAt(where, timeout, real=real)
+        self.nativeClickAt(where, timeout, real=real, pdb=pdb)
         self.wait_requests(wait_requests)
         if wait_load:
             return self._wait_load(timeout)
 
-    # XXX: TODO: this method do not work by now, event seems not posted, strange
     def native_click_link(self, selector, timeout=None, offsetx = 0, offsety = 0):
         """Click a link and wait for the page to load using a real mouse event.
         @param selector: jQuery selector.
@@ -901,7 +934,6 @@ class Browser(object):
         """
         return self.native_click(selector, wait_load=True, timeout=timeout, offsetx=offsetx, offsety=offsety)
 
-    # XXX: TODO: this method do not work by now, event seems not posted, strange
     def native_click_ajax(self, selector, wait_requests=1, timeout=None, offsetx = 0, offsety = 0):
         """Click a AJAX link using a raw mouse click and wait for the request to finish.
         @param selector: jQuery selector.
@@ -1319,6 +1351,16 @@ class Browser(object):
         """
         self._javascript_prompt_callback = callback
 
+    @property
+    def cookiesjar(self):
+        """Compat."""
+        return self.manager.cookieJar()
+
+    @property
+    def cookiejar(self):
+        """Compat."""
+        return self.cookiesjar
+
     def get_cookies(self):
         """Return string containing the current cookies in Mozilla format."""
         return self.cookiesjar.mozillaCookies()
@@ -1328,44 +1370,20 @@ class Browser(object):
         return self.cookiesjar.setMozillaCookies(string_cookies)
 
     def get_proxy(self):
-        """Return string containing the current proxy."""
-        return self.manager.proxy()
+        """Set NManager.get_proxy (wrapper)"""
+        return self.manager.get_proxy()
 
     def set_proxy(self, string_proxy):
-        """Set proxy [http|socks5]://username:password@hostname:port"""
-        urlinfo = urlparse.urlparse(string_proxy)
+        """Set NManager.set_proxy (wrapper)"""
+        return self.manager.set_proxy(string_proxy)
 
-        proxy = QNetworkProxy()
-        if urlinfo.scheme == 'socks5' :
-                proxy.setType(1)
-        elif urlinfo.scheme == 'http' :
-                proxy.setType(3)
-        else :
-                proxy.setType(2)
-                self.manager.setProxy(proxy)
-                return self.manager.proxy()
-
-        proxy.setHostName(urlinfo.hostname)
-        proxy.setPort(urlinfo.port)
-        if urlinfo.username != None :
-                proxy.setUser(urlinfo.username)
-        else :
-                proxy.setUser('')
-
-        if urlinfo.password != None :
-                proxy.setPassword(urlinfo.password)
-        else :
-                proxy.setPassword('')
-
-        self.manager.setProxy(proxy)
-        return self.manager.proxy()
-
-    def download(self, url, outfd=None, timeout=None):
+    def download(self, url, outfd=None, timeout=None, proxy_url=None):
         """
         Download a given URL using current cookies.
 
         @param url: URL or path to download
         @param outfd: Output file-like stream. If None, return data string.
+        @param proxy_url: special proxy url (see NManager.set_proxy) to use (default to global networkmanager's proxy
         @param tiemout: int, seconds for timeout
         @return: Bytes downloaded (None if something went wrong)
         @note: If url is a path, the current base URL will be pre-appended.
@@ -1380,6 +1398,7 @@ class Browser(object):
         request = self.apply_ssl(request)
         # Create a new manager to process this download
         manager = NManager.new(self)
+        manager.set_proxy(proxy_url)
         reply = manager.get(request)
         itime = time.time()
         if reply.error():
@@ -1498,65 +1517,6 @@ def _debug(obj, linefeed=True, outfd=sys.stderr, outputencoding="utf8"):
     outfd.write(strobj)
     outfd.flush()
 
-class SpynnerError(Exception):
-    """General Spynner error."""
-
-class SpynnerPageError(Exception):
-    """Error loading page."""
-
-class SpynnerTimeout(Exception):
-    """A timeout (usually on page load) has been reached."""
-
-class SpynnerJavascriptError(Exception):
-    """Error on the injected Javascript code."""
-
-class ExtendedNetworkCookieJar(QNetworkCookieJar):
-    def mozillaCookies(self):
-        """
-        Return all cookies in Mozilla text format:
-
-        # domain domain_flag path secure_connection expiration name value
-
-        .firefox.com     TRUE   /  FALSE  946684799   MOZILLA_ID  100103
-        """
-        header = ["# Netscape HTTP Cookie File", ""]
-        lines = [self.get_cookie_line(cookie)
-                 for cookie in self.allCookies()]
-        return "\n".join(header + lines)
-
-    def cookies_map(self):
-        maps = {}
-        for i in self.allCookies():
-            maps[i] = get_cookie_line(i)
-        return maps
-
-    def setMozillaCookies(self, string_cookies):
-        """Set all cookies from Mozilla test format string.
-        .firefox.com     TRUE   /  FALSE  946684799   MOZILLA_ID  100103
-        """
-        def str2bool(value):
-            return {"TRUE": True, "FALSE": False}[value]
-        def get_cookie(line):
-            fields = map(str.strip, line.split("\t"))
-            if len(fields) != 7:
-                return
-            domain, domain_flag, path, is_secure, expiration, name, value = fields
-            cookie = QNetworkCookie(name, value)
-            cookie.setDomain(domain)
-            cookie.setPath(path)
-            cookie.setSecure(str2bool(is_secure))
-            cookie.setExpirationDate(QDateTime.fromTime_t(int(expiration)))
-            return cookie
-        cookies = [get_cookie(line) for line in string_cookies.splitlines()
-          if line.strip() and not line.strip().startswith("#")]
-        self.setAllCookies(filter(bool, cookies))
-
-    def cookiesForUrl(self, qurl):
-        cookies = QNetworkCookieJar.cookiesForUrl(self, qurl)
-        #for i in cookies:
-        #    info = get_cookie_info(i)
-        #    print "------------>> %(domain)s " % info
-        return cookies
 
 def toString(s):
     if HAS_PYSIDE:
@@ -1603,8 +1563,6 @@ def get_cookie_info(cookie):
     }
 
 
-
-
 def merge_cookies(cookies1, cookies2):
     kf = "%(name)s____%(domain)s____%(path)s"
     cookies = dict(
@@ -1613,13 +1571,78 @@ def merge_cookies(cookies1, cookies2):
          [(get_cookie_info(cc), cc) for cc in cookies1]
         ])
     for i in cookies2:
-        if 'LaBanquePostale' in kf:
-            pprint (
-                [get_cookie_info(c) for c in cookies],
-                get_cookie_info(i))
-        cookies[kf % get_cookie_info(i)] = i
+        k = kf % get_cookie_info(i)
+        if k in cookies:
+            j = cookies[k]
+            #if j != i:
+            #    print "-"*80
+            #    print k
+            #    print j.toRawForm()
+            #    print i.toRawForm()
+            #    print "-"*80
+        cookies[k] = i
     return cookies.values()
 
+
+class SpynnerError(Exception):
+    """General Spynner error."""
+
+class SpynnerPageError(Exception):
+    """Error loading page."""
+
+class SpynnerTimeout(Exception):
+    """A timeout (usually on page load) has been reached."""
+
+class SpynnerJavascriptError(Exception):
+    """Error on the injected Javascript code."""
+
+class ExtendedNetworkCookieJar(QNetworkCookieJar):
+    def mozillaCookies(self):
+        """
+        Return all cookies in Mozilla text format:
+
+        # domain domain_flag path secure_connection expiration name value
+
+        .firefox.com     TRUE   /  FALSE  946684799   MOZILLA_ID  100103
+        """
+        header = ["# Netscape HTTP Cookie File", ""]
+        lines = [get_cookie_line(cookie)
+                 for cookie in self.allCookies()]
+        return "\n".join(header + lines)
+
+    def cookies_map(self):
+        maps = {}
+        for i in self.allCookies():
+            maps[i] = get_cookie_line(i)
+        return maps
+
+    def setMozillaCookies(self, string_cookies):
+        """Set all cookies from Mozilla test format string.
+        .firefox.com     TRUE   /  FALSE  946684799   MOZILLA_ID  100103
+        """
+        def str2bool(value):
+            return {"TRUE": True, "FALSE": False}[value]
+        def get_cookie(line):
+            fields = map(str.strip, line.split("\t"))
+            if len(fields) != 7:
+                return
+            domain, domain_flag, path, is_secure, expiration, name, value = fields
+            cookie = QNetworkCookie(name, value)
+            cookie.setDomain(domain)
+            cookie.setPath(path)
+            cookie.setSecure(str2bool(is_secure))
+            cookie.setExpirationDate(QDateTime.fromTime_t(int(expiration)))
+            return cookie
+        cookies = [get_cookie(line) for line in string_cookies.splitlines()
+          if line.strip() and not line.strip().startswith("#")]
+        self.setAllCookies(filter(bool, cookies))
+
+    def cookiesForUrl(self, qurl):
+        cookies = QNetworkCookieJar.cookiesForUrl(self, qurl)
+        #for i in cookies:
+        #    info = get_cookie_info(i)
+        #    print "------------>> %(domain)s " % info
+        return cookies
 
 class NManager(QNetworkAccessManager):
     ob = None # Browser instance
@@ -1629,6 +1652,7 @@ class NManager(QNetworkAccessManager):
             cookiejar_klass = ExtendedNetworkCookieJar
         manager = klass()
         manager.ob = spynner
+        manager.proxy_url = None
         cookiejar = cookiejar_klass()
         manager.setCookieJar(cookiejar)
         manager.cookieJar().setParent(spynner.webpage)
@@ -1637,8 +1661,10 @@ class NManager(QNetworkAccessManager):
     def createRequest(manager, operation, request, data):
         self = manager.ob
         jar = manager.cookieJar()
-        cookies = merge_cookies(jar.allCookies(),
-                                self.cookies)
+        cookies = merge_cookies(
+            self.cookies,
+            jar.allCookies(),
+        )
         manager.cookieJar().setAllCookies(cookies)
         url = unicode(toString(request.url()))
         operation_name = self._operation_names.get(
@@ -1656,4 +1682,62 @@ class NManager(QNetworkAccessManager):
         reply = QNetworkAccessManager.createRequest(
             manager, operation, req, data)
         return reply
+
+    def get_proxy(self):
+        """Return string containing the current proxy."""
+        return self.proxy()
+
+    def set_proxy(self, string_proxy=None):
+        """Set proxy:
+        url can be in the form:
+
+            - hostname                        (http proxy)
+            - hostname:port                   (http proxy)
+            - username:password@hostname:port (http proxy)
+            - http://username:password@hostname:port
+            - socks5://username:password@hostname:port
+            - https://username:password@hostname:port
+            - httpcaching://username:password@hostname:port
+            - ftpcaching://username:password@hostname:port
+
+        """
+        if not string_proxy:
+            string_proxy = ''
+        if string_proxy:
+            urlinfo = urlparse.urlparse(string_proxy)
+            # default to http proxy if we have a string
+            if not urlinfo.scheme:
+                string_proxy = "http://%s" % string_proxy
+                urlinfo = urlparse.urlparse(string_proxy)
+            self.ob._debug(
+                WARNING, "Proxy: %s" % string_proxy)
+            self.proxy_url = string_proxy
+            proxy = QNetworkProxy()
+            if urlinfo.scheme == 'socks5':
+                proxy.setType(QNetworkProxy.Socks5Proxy)
+            elif urlinfo.scheme in ['https', 'http']:
+                proxy.setType(QNetworkProxy.HttpProxy)
+            elif urlinfo.scheme == 'httpcaching':
+                proxy.setType(QNetworkProxy.HttpCachingProxy)
+            elif urlinfo.scheme == 'ftpcaching':
+                proxy.setType(QNetworkProxy.FtpCachingProxy)
+            else:
+                proxy.setType(QNetworkProxy.NoProxy)
+            if urlinfo.hostname != None:
+                proxy.setHostName(urlinfo.hostname)
+            if urlinfo.port != None:
+                proxy.setPort(urlinfo.port)
+            if urlinfo.username != None:
+                proxy.setUser(urlinfo.username)
+            else:
+                proxy.setUser('')
+            if urlinfo.password != None:
+                proxy.setPassword(urlinfo.password)
+            else:
+                proxy.setPassword('')
+            self.setProxy(proxy)
+        elif self is not self.ob.manager:
+            if self.ob.manager.proxy_url:
+                self.set_proxy(self.ob.manager.proxy_url)
+        return self.proxy()
 
