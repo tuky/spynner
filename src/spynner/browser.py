@@ -1532,13 +1532,15 @@ def bool2str(value):
 
 
 def byte2str(value):
+    if isinstance(value, QString):
+        value = u"%s" % value
     if isinstance(value, unicode):
         return value.encode("utf-8")
     return str(value)
 
 
 def get_cookie_line(cookie):
-    domain_flag = str(cookie.domain()).startswith(".")
+    domain_flag = byte2str(cookie.domain()).startswith(".")
     return "\t".join([
         byte2str(cookie.domain()),
         bool2str(domain_flag),
@@ -1551,7 +1553,7 @@ def get_cookie_line(cookie):
 
 
 def get_cookie_info(cookie):
-    domain_flag = str(cookie.domain()).startswith(".")
+    domain_flag = byte2str(cookie.domain()).startswith(".")
     return {
         'domain': byte2str(cookie.domain()),
         'domain_flag': domain_flag,
